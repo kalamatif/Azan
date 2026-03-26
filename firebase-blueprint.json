@@ -1,0 +1,65 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the application.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "muazzin"] },
+        "mosqueId": { "type": "string" }
+      },
+      "required": ["uid", "name", "email", "role"]
+    },
+    "Mosque": {
+      "title": "Mosque",
+      "description": "A mosque registered in the system.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "location": { "type": "string" },
+        "adminUid": { "type": "string" },
+        "isLive": { "type": "boolean" },
+        "currentStreamId": { "type": "string" }
+      },
+      "required": ["id", "name", "adminUid"]
+    },
+    "Stream": {
+      "title": "Stream",
+      "description": "A live stream session.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "mosqueId": { "type": "string" },
+        "startTime": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["live", "ended"] }
+      },
+      "required": ["id", "mosqueId", "startTime", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profiles."
+    },
+    "/mosques/{mosqueId}": {
+      "schema": "Mosque",
+      "description": "Mosque details."
+    },
+    "/mosques/{mosqueId}/streams/{streamId}": {
+      "schema": "Stream",
+      "description": "Stream sessions for a mosque."
+    },
+    "/mosques/{mosqueId}/signaling/{uid}": {
+      "schema": "object",
+      "description": "WebRTC signaling data for peer connections."
+    },
+    "/notifications/{uid}": {
+      "schema": "object",
+      "description": "User notification tokens and preferences."
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "AzanConnect",
+  "description": "Real-time audio streaming of Azan from mosques to nearby users.",
+  "requestFramePermissions": ["microphone"]
+}

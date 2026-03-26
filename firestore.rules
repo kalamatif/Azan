@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: users
+    //   - uid: string (required)
+    //   - name: string (required)
+    //   - email: string (required)
+    //   - role: string (required, 'user' | 'muazzin')
+    //   - mosqueId: string (optional)
+    //
+    // Collection: mosques
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - location: string (required)
+    //   - adminUid: string (required)
+    //   - isLive: bool (required)
+    //   - currentStreamId: string (optional)
+    //
+    // Collection: mosques/{mosqueId}/streams
+    //   - id: string (required)
+    //   - mosqueId: string (required)
+    //   - startTime: timestamp (required)
+    //   - status: string (required, 'live' | 'ended')
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin(mosqueId) {
+      return isAuthenticated() && get(/databases/$(database)/documents/mosques/$(mosqueId)).data.adminUid == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId);
+    }
+
+    match /mosques/{mosqueId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (resource.data.adminUid == request.auth.uid || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isLive', 'currentStreamId']));
+    }
+
+    match /mosques/{mosqueId}/streams/{streamId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin(mosqueId);
+    }
+
+    match /mosques/{mosqueId}/signaling/{userId} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+}
