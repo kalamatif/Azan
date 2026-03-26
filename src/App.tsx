@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Component } from 'react';
 import { 
   Mic, 
   MicOff, 
@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuthState } from 'react-firebase-hooks/auth';
-import { auth, db, signIn, logOut } from './firebase';
+import { auth, db, signIn, logOut, handleFirestoreError, OperationType } from './firebase';
 import { 
   doc, 
   setDoc, 
@@ -50,6 +50,62 @@ if ('serviceWorker' in navigator) {
 }
 
 // --- Components ---
+
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: any;
+}
+
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let message = "Something went wrong.";
+      try {
+        if (this.state.error && this.state.error.message) {
+          const errObj = JSON.parse(this.state.error.message);
+          message = `Error: ${errObj.error} (Op: ${errObj.operationType})`;
+        }
+      } catch (e) {
+        message = this.state.error?.message || message;
+      }
+
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-red-50 p-6">
+          <div className="max-w-md w-full bg-white p-8 rounded-3xl shadow-xl border border-red-100 text-center">
+            <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">Application Error</h2>
+            <p className="text-gray-600 mb-6">{message}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full py-4 bg-red-600 text-white rounded-2xl font-bold hover:bg-red-700 transition-all"
+            >
+              Reload Application
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 const Header = () => (
   <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100 px-6 py-4">
@@ -183,29 +239,37 @@ const Broadcaster = ({ mosque, user }: { mosque: Mosque; user: UserProfile }) =>
       });
 
       // Start Stream
-      const streamRef = await addDoc(collection(db, `mosques/${mosque.id}/streams`), {
-        mosqueId: mosque.id,
-        startTime: serverTimestamp(),
-        status: 'live'
-      });
-      await updateDoc(doc(db, 'mosques', mosque.id), {
-        isLive: true,
-        currentStreamId: streamRef.id
-      });
-      timerRef.current = setInterval(() => setStreamTime(prev => prev + 1), 1000);
+      try {
+        const streamRef = await addDoc(collection(db, `mosques/${mosque.id}/streams`), {
+          mosqueId: mosque.id,
+          startTime: serverTimestamp(),
+          status: 'live'
+        });
+        await updateDoc(doc(db, 'mosques', mosque.id), {
+          isLive: true,
+          currentStreamId: streamRef.id
+        });
+        timerRef.current = setInterval(() => setStreamTime(prev => prev + 1), 1000);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, `mosques/${mosque.id}`);
+      }
     } else {
       // End Stream
       webrtcRef.current?.stop();
-      if (mosque.currentStreamId) {
-        await updateDoc(doc(db, `mosques/${mosque.id}/streams`, mosque.currentStreamId), {
-          status: 'ended',
-          endTime: serverTimestamp()
+      try {
+        if (mosque.currentStreamId) {
+          await updateDoc(doc(db, `mosques/${mosque.id}/streams`, mosque.currentStreamId), {
+            status: 'ended',
+            endTime: serverTimestamp()
+          });
+        }
+        await updateDoc(doc(db, 'mosques', mosque.id), {
+          isLive: false,
+          currentStreamId: null
         });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `mosques/${mosque.id}`);
       }
-      await updateDoc(doc(db, 'mosques', mosque.id), {
-        isLive: false,
-        currentStreamId: null
-      });
       if (timerRef.current) clearInterval(timerRef.current);
       setStreamTime(0);
     }
@@ -288,6 +352,8 @@ const Listener = ({ user }: { user: UserProfile }) => {
         const myMosque = docs.find(m => m.id === user.mosqueId);
         if (myMosque) setSelectedMosque(myMosque);
       }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'mosques');
     });
     return unsubscribe;
   }, [user.mosqueId]);
@@ -332,17 +398,25 @@ const Listener = ({ user }: { user: UserProfile }) => {
 
   const handleSetHomeMosque = async () => {
     if (!selectedMosque) return;
-    await updateDoc(doc(db, 'users', user.uid), {
-      homeMosqueId: selectedMosque.id
-    });
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        homeMosqueId: selectedMosque.id
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    }
   };
 
   const requestNotificationPermission = async () => {
     const permission = await Notification.requestPermission();
     if (permission === 'granted') {
-      await updateDoc(doc(db, 'users', user.uid), {
-        backgroundEnabled: true
-      });
+      try {
+        await updateDoc(doc(db, 'users', user.uid), {
+          backgroundEnabled: true
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+      }
     }
   };
 
@@ -354,6 +428,7 @@ const Listener = ({ user }: { user: UserProfile }) => {
 
   useEffect(() => {
     if (user.homeMosqueId && user.backgroundEnabled) {
+      const path = `mosques/${user.homeMosqueId}`;
       const unsubscribe = onSnapshot(doc(db, 'mosques', user.homeMosqueId), (snap) => {
         if (snap.exists()) {
           const m = snap.data() as Mosque;
@@ -365,6 +440,8 @@ const Listener = ({ user }: { user: UserProfile }) => {
             });
           }
         }
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, path);
       });
       return unsubscribe;
     }
@@ -542,21 +619,28 @@ export default function App() {
 
   useEffect(() => {
     if (user) {
+      const path = `users/${user.uid}`;
       const unsubscribe = onSnapshot(doc(db, 'users', user.uid), async (snap) => {
         if (snap.exists()) {
           const userData = snap.data() as UserProfile;
           setProfile(userData);
           
           if (userData.role === 'muazzin' && userData.mosqueId) {
-            const mSnap = await getDoc(doc(db, 'mosques', userData.mosqueId));
-            if (mSnap.exists()) {
-              setMosque({ id: mSnap.id, ...mSnap.data() } as Mosque);
+            try {
+              const mSnap = await getDoc(doc(db, 'mosques', userData.mosqueId));
+              if (mSnap.exists()) {
+                setMosque({ id: mSnap.id, ...mSnap.data() } as Mosque);
+              }
+            } catch (error) {
+              handleFirestoreError(error, OperationType.GET, `mosques/${userData.mosqueId}`);
             }
           }
         } else {
           setProfile(null);
         }
         setLoading(false);
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, path);
       });
       return unsubscribe;
     } else {
@@ -570,25 +654,29 @@ export default function App() {
     if (!user) return;
     
     let mosqueId = '';
-    if (data.role === 'muazzin') {
-      const mosqueRef = await addDoc(collection(db, 'mosques'), {
-        name: data.mosqueName,
-        location: data.mosqueLocation,
-        adminUid: user.uid,
-        isLive: false
-      });
-      mosqueId = mosqueRef.id;
+    try {
+      if (data.role === 'muazzin') {
+        const mosqueRef = await addDoc(collection(db, 'mosques'), {
+          name: data.mosqueName,
+          location: data.mosqueLocation,
+          adminUid: user.uid,
+          isLive: false
+        });
+        mosqueId = mosqueRef.id;
+      }
+
+      const newProfile: UserProfile = {
+        uid: user.uid,
+        name: data.name,
+        email: user.email || '',
+        role: data.role,
+        mosqueId: mosqueId || undefined
+      };
+
+      await setDoc(doc(db, 'users', user.uid), newProfile);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'onboarding');
     }
-
-    const newProfile: UserProfile = {
-      uid: user.uid,
-      name: data.name,
-      email: user.email || '',
-      role: data.role,
-      mosqueId: mosqueId || undefined
-    };
-
-    await setDoc(doc(db, 'users', user.uid), newProfile);
   };
 
   if (authLoading || loading) {
@@ -603,74 +691,76 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F8F9FE] text-gray-900 font-sans selection:bg-indigo-100">
-      <Header />
-      
-      <main className="pb-24">
-        {!user ? (
-          <div className="max-w-4xl mx-auto px-6 py-24 text-center">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="space-y-8"
-            >
-              <div className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-full font-bold text-sm">
-                <span className="w-2 h-2 bg-indigo-600 rounded-full animate-ping" />
-                Real-time Spiritual Connection
-              </div>
-              <h2 className="text-6xl font-black tracking-tight leading-tight">
-                Hear the Azan Clearly,<br />
-                <span className="text-indigo-600">Wherever You Are.</span>
-              </h2>
-              <p className="text-xl text-gray-500 max-w-2xl mx-auto">
-                Connect your home to your local mosque. Listen to live Azan and announcements 
-                with zero latency on any device.
-              </p>
-              <div className="pt-8">
-                <button
-                  onClick={signIn}
-                  className="px-12 py-5 bg-indigo-600 text-white rounded-[2rem] font-black text-xl hover:bg-indigo-700 transition-all shadow-2xl shadow-indigo-200 hover:-translate-y-1 active:translate-y-0"
-                >
-                  Join the Community
-                </button>
-              </div>
-              
-              <div className="pt-24 grid grid-cols-3 gap-8 max-w-3xl mx-auto opacity-50 grayscale hover:grayscale-0 transition-all duration-700">
-                <div className="flex flex-col items-center gap-2">
-                  <div className="text-4xl font-black">10k+</div>
-                  <div className="text-xs font-bold uppercase tracking-widest">Listeners</div>
+    <ErrorBoundary>
+      <div className="min-h-screen bg-[#F8F9FE] text-gray-900 font-sans selection:bg-indigo-100">
+        <Header />
+        
+        <main className="pb-24">
+          {!user ? (
+            <div className="max-w-4xl mx-auto px-6 py-24 text-center">
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-8"
+              >
+                <div className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-full font-bold text-sm">
+                  <span className="w-2 h-2 bg-indigo-600 rounded-full animate-ping" />
+                  Real-time Spiritual Connection
                 </div>
-                <div className="flex flex-col items-center gap-2">
-                  <div className="text-4xl font-black">500+</div>
-                  <div className="text-xs font-bold uppercase tracking-widest">Mosques</div>
+                <h2 className="text-6xl font-black tracking-tight leading-tight">
+                  Hear the Azan Clearly,<br />
+                  <span className="text-indigo-600">Wherever You Are.</span>
+                </h2>
+                <p className="text-xl text-gray-500 max-w-2xl mx-auto">
+                  Connect your home to your local mosque. Listen to live Azan and announcements 
+                  with zero latency on any device.
+                </p>
+                <div className="pt-8">
+                  <button
+                    onClick={signIn}
+                    className="px-12 py-5 bg-indigo-600 text-white rounded-[2rem] font-black text-xl hover:bg-indigo-700 transition-all shadow-2xl shadow-indigo-200 hover:-translate-y-1 active:translate-y-0"
+                  >
+                    Join the Community
+                  </button>
                 </div>
-                <div className="flex flex-col items-center gap-2">
-                  <div className="text-4xl font-black">0.3s</div>
-                  <div className="text-xs font-bold uppercase tracking-widest">Latency</div>
+                
+                <div className="pt-24 grid grid-cols-3 gap-8 max-w-3xl mx-auto opacity-50 grayscale hover:grayscale-0 transition-all duration-700">
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="text-4xl font-black">10k+</div>
+                    <div className="text-xs font-bold uppercase tracking-widest">Listeners</div>
+                  </div>
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="text-4xl font-black">500+</div>
+                    <div className="text-xs font-bold uppercase tracking-widest">Mosques</div>
+                  </div>
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="text-4xl font-black">0.3s</div>
+                    <div className="text-xs font-bold uppercase tracking-widest">Latency</div>
+                  </div>
                 </div>
-              </div>
-            </motion.div>
-          </div>
-        ) : !profile ? (
-          <Onboarding onComplete={handleOnboarding} />
-        ) : profile.role === 'muazzin' && mosque ? (
-          <div className="px-6 py-12">
-            <Broadcaster mosque={mosque} user={profile} />
-          </div>
-        ) : (
-          <Listener user={profile} />
-        )}
-      </main>
+              </motion.div>
+            </div>
+          ) : !profile ? (
+            <Onboarding onComplete={handleOnboarding} />
+          ) : profile.role === 'muazzin' && mosque ? (
+            <div className="px-6 py-12">
+              <Broadcaster mosque={mosque} user={profile} />
+            </div>
+          ) : (
+            <Listener user={profile} />
+          )}
+        </main>
 
-      {/* Footer / Bottom Nav for Mobile */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-lg border-t border-gray-100 px-6 py-4 lg:hidden">
-        <div className="flex justify-around items-center">
-          <button className="p-2 text-indigo-600"><Radio className="w-6 h-6" /></button>
-          <button className="p-2 text-gray-400"><Search className="w-6 h-6" /></button>
-          <button className="p-2 text-gray-400"><Bell className="w-6 h-6" /></button>
-          <button className="p-2 text-gray-400"><Settings className="w-6 h-6" /></button>
-        </div>
-      </nav>
-    </div>
+        {/* Footer / Bottom Nav for Mobile */}
+        <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-lg border-t border-gray-100 px-6 py-4 lg:hidden">
+          <div className="flex justify-around items-center">
+            <button className="p-2 text-indigo-600"><Radio className="w-6 h-6" /></button>
+            <button className="p-2 text-gray-400"><Search className="w-6 h-6" /></button>
+            <button className="p-2 text-gray-400"><Bell className="w-6 h-6" /></button>
+            <button className="p-2 text-gray-400"><Settings className="w-6 h-6" /></button>
+          </div>
+        </nav>
+      </div>
+    </ErrorBoundary>
   );
 }

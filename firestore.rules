@@ -10,6 +10,8 @@ service cloud.firestore {
     //   - email: string (required)
     //   - role: string (required, 'user' | 'muazzin')
     //   - mosqueId: string (optional)
+    //   - homeMosqueId: string (optional)
+    //   - backgroundEnabled: bool (optional)
     //
     // Collection: mosques
     //   - id: string (required)
@@ -26,6 +28,9 @@ service cloud.firestore {
     //   - status: string (required, 'live' | 'ended')
     // ===============================================================
 
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -34,24 +39,75 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isAdmin(mosqueId) {
-      return isAuthenticated() && get(/databases/$(database)/documents/mosques/$(mosqueId)).data.adminUid == request.auth.uid;
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "kalamatif188@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isMosqueAdmin(mosqueId) {
+      return isAuthenticated() && (get(/databases/$(database)/documents/mosques/$(mosqueId)).data.adminUid == request.auth.uid || isAdmin());
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function validString(field, min, max) {
+      return request.resource.data[field] is string && request.resource.data[field].size() >= min && request.resource.data[field].size() <= max;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'name', 'email', 'role', 'mosqueId', 'homeMosqueId', 'backgroundEnabled']) &&
+             data.uid == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             isValidEmail(data.email) &&
+             data.role in ['user', 'muazzin'];
+    }
+
+    function isValidMosque(data) {
+      return hasOnlyAllowedFields(['id', 'name', 'location', 'adminUid', 'isLive', 'currentStreamId']) &&
+             data.id is string && data.id.size() > 0 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.location is string && data.location.size() > 0 &&
+             data.adminUid is string &&
+             data.isLive is bool;
+    }
+
+    function isValidStream(data) {
+      return hasOnlyAllowedFields(['id', 'mosqueId', 'startTime', 'status']) &&
+             data.id is string &&
+             data.mosqueId is string &&
+             data.startTime is timestamp &&
+             data.status in ['live', 'ended'];
     }
 
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow write: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role;
     }
 
     match /mosques/{mosqueId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated() && (resource.data.adminUid == request.auth.uid || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isLive', 'currentStreamId']));
+      allow create: if isAuthenticated() && isValidMosque(request.resource.data) && request.resource.data.adminUid == request.auth.uid;
+      allow update: if isAuthenticated() && isValidMosque(request.resource.data) && 
+                    (resource.data.adminUid == request.auth.uid || 
+                     (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isLive', 'currentStreamId']) && 
+                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'muazzin'));
     }
 
     match /mosques/{mosqueId}/streams/{streamId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin(mosqueId);
+      allow create: if isMosqueAdmin(mosqueId) && isValidStream(request.resource.data);
+      allow update: if isMosqueAdmin(mosqueId) && isValidStream(request.resource.data);
     }
 
     match /mosques/{mosqueId}/signaling/{userId} {

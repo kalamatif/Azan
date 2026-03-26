@@ -11,7 +11,7 @@ import {
   where,
   getDocs
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { db, handleFirestoreError, OperationType } from './firebase';
 
 const configuration = {
   iceServers: [
@@ -49,18 +49,26 @@ export class WebRTCManager {
     await this.peerConnection.setLocalDescription(offer);
 
     const streamRef = doc(db, 'mosques', this.mosqueId, 'signaling', 'broadcast');
-    await setDoc(streamRef, {
-      offer: {
-        type: offer.type,
-        sdp: offer.sdp,
-      },
-      timestamp: Date.now(),
-    });
+    try {
+      await setDoc(streamRef, {
+        offer: {
+          type: offer.type,
+          sdp: offer.sdp,
+        },
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, streamRef.path);
+    }
 
-    this.peerConnection.onicecandidate = (event) => {
+    this.peerConnection.onicecandidate = async (event) => {
       if (event.candidate) {
         const candidatesCol = collection(db, 'mosques', this.mosqueId, 'signaling', 'broadcast', 'candidates');
-        addDoc(candidatesCol, event.candidate.toJSON());
+        try {
+          await addDoc(candidatesCol, event.candidate.toJSON());
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, candidatesCol.path);
+        }
       }
     };
   }
@@ -77,9 +85,14 @@ export class WebRTCManager {
     };
 
     const streamRef = doc(db, 'mosques', this.mosqueId, 'signaling', 'broadcast');
-    const streamDoc = await getDoc(streamRef);
+    let streamDoc;
+    try {
+      streamDoc = await getDoc(streamRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, streamRef.path);
+    }
 
-    if (streamDoc.exists()) {
+    if (streamDoc && streamDoc.exists()) {
       const data = streamDoc.data();
       await this.peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
       
@@ -96,9 +109,15 @@ export class WebRTCManager {
       snapshot.docChanges().forEach(async (change) => {
         if (change.type === 'added') {
           const data = change.doc.data();
-          await this.peerConnection?.addIceCandidate(new RTCIceCandidate(data));
+          try {
+            await this.peerConnection?.addIceCandidate(new RTCIceCandidate(data));
+          } catch (e) {
+            console.error("Error adding ICE candidate", e);
+          }
         }
       });
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, candidatesCol.path);
     });
   }
 

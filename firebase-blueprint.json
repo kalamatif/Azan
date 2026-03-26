@@ -9,7 +9,9 @@
         "name": { "type": "string" },
         "email": { "type": "string" },
         "role": { "type": "string", "enum": ["user", "muazzin"] },
-        "mosqueId": { "type": "string" }
+        "mosqueId": { "type": "string" },
+        "homeMosqueId": { "type": "string" },
+        "backgroundEnabled": { "type": "boolean" }
       },
       "required": ["uid", "name", "email", "role"]
     },
